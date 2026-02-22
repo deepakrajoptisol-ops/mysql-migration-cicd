@@ -69,3 +69,13 @@ def check_policy(sql_text: str, changeset: dict) -> None:
                 "changeset": changeset["id"],
                 "warning": warning_msg,
             }))
+
+
+def should_handle_gracefully() -> bool:
+    """
+    Check if migrations should handle 'already exists' errors gracefully.
+    
+    Returns True if GRACEFUL_MIGRATIONS environment variable is set to 'true'.
+    Default is True for backward compatibility.
+    """
+    return os.getenv("GRACEFUL_MIGRATIONS", "true").lower() == "true"

@@ -105,6 +105,7 @@ jobs:
       DB_NAME:           ${{ secrets.PROD_DB_NAME }}
       ENV_NAME:          prod
       ALLOW_DESTRUCTIVE: ${{ inputs.allow_destructive }}
+      GRACEFUL_MIGRATIONS: true
 
     steps:
       - name: Checkout

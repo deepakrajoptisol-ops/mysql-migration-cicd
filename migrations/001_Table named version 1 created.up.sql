@@ -9,7 +9,7 @@
 -- labels: web-upload
 -- contexts: dev,prod
 
-CREATE TABLE mytable (
+CREATE TABLE IF NOT EXISTS mytable (
     id INT PRIMARY KEY,
     name VARCHAR(100),
     created_at DATE

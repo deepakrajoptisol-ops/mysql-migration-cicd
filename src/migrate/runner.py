@@ -21,7 +21,7 @@ from pathlib import Path
 from ..db import get_conn, fetch_one, fetch_all, execute, execute_script
 from .changelog import load_changelog, resolve_sql, checksum
 from .preconditions import evaluate_preconditions
-from .policy import check_policy
+from .policy import check_policy, should_handle_gracefully
 
 logger = logging.getLogger("migrate")
 
@@ -399,31 +399,62 @@ def update_cmd(changelog_path: str = "changelog/changelog.yml",
             }))
             try:
                 execute_script(conn, sql_text)
+                exec_type = "EXECUTED"
             except Exception as exc:
-                logger.error(json.dumps({
-                    "event": "changeset_failed",
-                    "id": cs["id"], "error": str(exc),
-                }))
-                raise RuntimeError(
-                    f"Changeset '{cs['id']}' failed: {exc}"
-                ) from exc
+                # Handle common idempotent errors gracefully if enabled
+                error_str = str(exc).lower()
+                graceful_errors = [
+                    "table already exists",
+                    "already exists", 
+                    "duplicate column",
+                    "duplicate key name",
+                    "duplicate entry"
+                ]
+                
+                if (should_handle_gracefully() and 
+                    any(phrase in error_str for phrase in graceful_errors)):
+                    logger.warning(json.dumps({
+                        "event": "changeset_skipped_exists",
+                        "id": cs["id"], 
+                        "reason": "Resource already exists - continuing gracefully",
+                        "error": str(exc),
+                    }))
+                    exec_type = "MARK_RAN"  # Mark as ran but skipped
+                else:
+                    # For non-idempotent errors or when graceful handling is disabled
+                    logger.error(json.dumps({
+                        "event": "changeset_failed",
+                        "id": cs["id"], 
+                        "error": str(exc),
+                        "graceful_handling": should_handle_gracefully()
+                    }))
+                    raise RuntimeError(
+                        f"Changeset '{cs['id']}' failed: {exc}"
+                    ) from exc
 
             order = _next_order(conn)
             execute(conn, """
                 INSERT INTO DATABASECHANGELOG
                     (ID, AUTHOR, FILENAME, DATEEXECUTED, ORDEREXECUTED,
                      EXECTYPE, MD5SUM, LABELS, CONTEXTS)
-                VALUES (%s, %s, %s, NOW(), %s, 'EXECUTED', %s, %s, %s)
+                VALUES (%s, %s, %s, NOW(), %s, %s, %s, %s)
             """, (
                 cs["id"], cs["author"], cs["sqlFile"], order,
-                cs_checksum,
+                exec_type, cs_checksum,
                 ",".join(cs["labels"]),
                 ",".join(cs["contexts"]),
             ))
             applied_count += 1
-            logger.info(json.dumps({
-                "event": "changeset_applied", "id": cs["id"],
-            }))
+            
+            if exec_type == "EXECUTED":
+                logger.info(json.dumps({
+                    "event": "changeset_applied", "id": cs["id"],
+                }))
+            else:
+                logger.info(json.dumps({
+                    "event": "changeset_marked_ran", "id": cs["id"],
+                    "reason": "Already exists - marked as ran"
+                }))
 
         # Success -------------------------------------------------------------
         execute(conn, """
