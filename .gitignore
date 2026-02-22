@@ -4,8 +4,9 @@ env.local
 !env.example
 
 # Backup files (large, temporary)
-*.sql
 backup_*.sql
+*_backup.sql
+ci_test_backup.sql
 
 # Python
 __pycache__/
