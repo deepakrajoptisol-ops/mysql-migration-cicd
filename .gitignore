@@ -6,7 +6,6 @@ env.local
 # Backup files (large, temporary)
 backup_*.sql
 *_backup.sql
-ci_test_backup.sql
 
 # Python
 __pycache__/
