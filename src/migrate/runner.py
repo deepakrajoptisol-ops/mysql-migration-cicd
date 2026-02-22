@@ -437,7 +437,7 @@ def update_cmd(changelog_path: str = "changelog/changelog.yml",
                 INSERT INTO DATABASECHANGELOG
                     (ID, AUTHOR, FILENAME, DATEEXECUTED, ORDEREXECUTED,
                      EXECTYPE, MD5SUM, LABELS, CONTEXTS)
-                VALUES (%s, %s, %s, NOW(), %s, %s, %s, %s)
+                VALUES (%s, %s, %s, NOW(), %s, %s, %s, %s, %s)
             """, (
                 cs["id"], cs["author"], cs["sqlFile"], order,
                 exec_type, cs_checksum,
