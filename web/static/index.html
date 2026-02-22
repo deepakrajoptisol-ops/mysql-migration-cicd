@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Migration Management System</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .migration-card {
+            border-left: 4px solid #007bff;
+            margin-bottom: 15px;
+        }
+        .migration-card.applied {
+            border-left-color: #28a745;
+        }
+        .migration-card.pending {
+            border-left-color: #ffc107;
+        }
+        .migration-card.failed {
+            border-left-color: #dc3545;
+        }
+        .risk-badge.low { background-color: #28a745; }
+        .risk-badge.medium { background-color: #ffc107; color: #000; }
+        .risk-badge.high { background-color: #dc3545; }
+        .sql-editor {
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+        }
+        .template-box {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 0.375rem;
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+        }
+        .status-applied { background-color: #28a745; }
+        .status-pending { background-color: #ffc107; }
+        .status-failed { background-color: #dc3545; }
+        .timeline {
+            position: relative;
+            padding-left: 30px;
+        }
+        .timeline::before {
+            content: '';
+            position: absolute;
+            left: 15px;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: #dee2e6;
+        }
+        .timeline-item {
+            position: relative;
+            margin-bottom: 20px;
+        }
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: -23px;
+            top: 8px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #007bff;
+            border: 2px solid #fff;
+            box-shadow: 0 0 0 2px #dee2e6;
+        }
+        .timeline-item.applied::before { background: #28a745; }
+        .timeline-item.pending::before { background: #ffc107; }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container">
+            <a class="navbar-brand" href="#">
+                <i class="fas fa-database"></i> Migration Management System
+            </a>
+            <div class="navbar-nav ms-auto">
+                <span class="navbar-text" id="statusIndicator">
+                    <i class="fas fa-circle text-success"></i> Connected
+                </span>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+        <!-- Dashboard Cards -->
+        <div class="row mb-4">
+            <div class="col-md-3">
+                <div class="card text-white bg-success">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between">
+                            <div>
+                                <h4 class="card-title" id="appliedCount">0</h4>
+                                <p class="card-text">Applied Migrations</p>
+                            </div>
+                            <div class="align-self-center">
+                                <i class="fas fa-check-circle fa-2x"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-white bg-warning">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between">
+                            <div>
+                                <h4 class="card-title" id="pendingCount">0</h4>
+                                <p class="card-text">Pending Migrations</p>
+                            </div>
+                            <div class="align-self-center">
+                                <i class="fas fa-clock fa-2x"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-white bg-info">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between">
+                            <div>
+                                <h4 class="card-title" id="totalCount">0</h4>
+                                <p class="card-text">Total Migrations</p>
+                            </div>
+                            <div class="align-self-center">
+                                <i class="fas fa-list fa-2x"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-white bg-secondary">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between">
+                            <div>
+                                <h4 class="card-title" id="backupCount">0</h4>
+                                <p class="card-text">Available Backups</p>
+                            </div>
+                            <div class="align-self-center">
+                                <i class="fas fa-save fa-2x"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab Navigation -->
+        <ul class="nav nav-tabs" id="mainTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="versions-tab" data-bs-toggle="tab" data-bs-target="#versions" type="button" role="tab">
+                    <i class="fas fa-code-branch"></i> All Versions
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="upload-tab" data-bs-toggle="tab" data-bs-target="#upload" type="button" role="tab">
+                    <i class="fas fa-upload"></i> Upload Migration
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="rollback-tab" data-bs-toggle="tab" data-bs-target="#rollback" type="button" role="tab">
+                    <i class="fas fa-undo"></i> Rollback
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="backups-tab" data-bs-toggle="tab" data-bs-target="#backups" type="button" role="tab">
+                    <i class="fas fa-save"></i> Backups
+                </button>
+            </li>
+        </ul>
+
+        <!-- Tab Content -->
+        <div class="tab-content" id="mainTabContent">
+            <!-- All Versions Tab -->
+            <div class="tab-pane fade show active" id="versions" role="tabpanel">
+                <div class="card mt-3">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="fas fa-code-branch"></i> Migration Versions</h5>
+                        <div>
+                            <button class="btn btn-outline-primary btn-sm" onclick="refreshVersions()">
+                                <i class="fas fa-sync-alt"></i> Refresh
+                            </button>
+                            <button class="btn btn-success btn-sm" onclick="applyPendingMigrations()" id="applyBtn" disabled>
+                                <i class="fas fa-play"></i> Apply Pending
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="timeline" id="versionsTimeline">
+                            <!-- Versions will be loaded here -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Upload Migration Tab -->
+            <div class="tab-pane fade" id="upload" role="tabpanel">
+                <div class="card mt-3">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="fas fa-upload"></i> Upload New Migration</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="template-box">
+                            <h6><i class="fas fa-info-circle"></i> SQL Template</h6>
+                            <pre class="mb-0"><code>-- =============================================================================
+-- Migration XXX: Description of changes
+-- Brief explanation of what this migration does
+-- =============================================================================
+-- id: XXX
+-- author: your-username
+-- risk: low|medium|high
+-- allowDestructive: false
+-- labels: feature,bugfix,performance
+-- contexts: dev,prod
+
+-- Your SQL statements here
+CREATE TABLE example_table (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);</code></pre>
+                        </div>
+
+                        <form id="uploadForm">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">Migration ID</label>
+                                        <input type="text" class="form-control" id="migrationId" placeholder="e.g., 009" required>
+                                        <div class="form-text">Next available: <span id="nextAvailableId">Loading...</span></div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">Description</label>
+                                        <input type="text" class="form-control" id="description" placeholder="e.g., add_user_preferences_table" required>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">Author</label>
+                                        <input type="text" class="form-control" id="author" value="deepakrajoptisol-ops" required>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">Risk Level</label>
+                                        <select class="form-select" id="riskLevel" required>
+                                            <option value="low">Low</option>
+                                            <option value="medium">Medium</option>
+                                            <option value="high">High</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">SQL Content</label>
+                                <textarea class="form-control sql-editor" id="sqlContent" rows="12" placeholder="Enter your SQL statements here..." required></textarea>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">GitHub Token</label>
+                                <input type="password" class="form-control" id="githubToken" placeholder="ghp_xxxxxxxxxxxx" required>
+                                <div class="form-text">Required for uploading to GitHub. <a href="https://github.com/settings/tokens" target="_blank">Generate token</a></div>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Commit Message</label>
+                                <input type="text" class="form-control" id="commitMessage" placeholder="Add migration XXX: description" required>
+                            </div>
+                            <button type="submit" class="btn btn-primary">
+                                <i class="fas fa-upload"></i> Upload & Create PR
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Rollback Tab -->
+            <div class="tab-pane fade" id="rollback" role="tabpanel">
+                <div class="card mt-3">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="fas fa-undo"></i> Rollback to Previous Version</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="alert alert-warning">
+                            <i class="fas fa-exclamation-triangle"></i>
+                            <strong>Warning:</strong> Rollback will restore the database from a backup. Any data written after the backup timestamp will be lost.
+                        </div>
+
+                        <form id="rollbackForm">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">Target Migration Version</label>
+                                        <select class="form-select" id="targetVersion" required>
+                                            <option value="">Select version to rollback to...</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">Backup File</label>
+                                        <select class="form-select" id="backupFile" required>
+                                            <option value="">Select backup file...</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Environment</label>
+                                <select class="form-select" id="environment" required>
+                                    <option value="dev">Development</option>
+                                    <option value="staging">Staging</option>
+                                    <option value="prod">Production</option>
+                                </select>
+                            </div>
+                            <div class="mb-3">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="confirmRollback" required>
+                                    <label class="form-check-label" for="confirmRollback">
+                                        I understand this operation is destructive and will restore the database from the selected backup
+                                    </label>
+                                </div>
+                            </div>
+                            <button type="submit" class="btn btn-danger">
+                                <i class="fas fa-undo"></i> Execute Rollback
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Backups Tab -->
+            <div class="tab-pane fade" id="backups" role="tabpanel">
+                <div class="card mt-3">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="fas fa-save"></i> Backup Management</h5>
+                        <button class="btn btn-success btn-sm" onclick="createBackup()">
+                            <i class="fas fa-plus"></i> Create Backup
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-hover">
+                                <thead>
+                                    <tr>
+                                        <th>Filename</th>
+                                        <th>Size</th>
+                                        <th>Created</th>
+                                        <th>Type</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="backupsTableBody">
+                                    <!-- Backups will be loaded here -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Modal -->
+    <div class="modal fade" id="loadingModal" tabindex="-1" data-bs-backdrop="static">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-body text-center">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <p class="mt-3 mb-0" id="loadingMessage">Processing...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Success Modal -->
+    <div class="modal fade" id="successModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header bg-success text-white">
+                    <h5 class="modal-title"><i class="fas fa-check-circle"></i> Success</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body" id="successMessage">
+                    <!-- Success message will be inserted here -->
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-success" data-bs-dismiss="modal">OK</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Error Modal -->
+    <div class="modal fade" id="errorModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header bg-danger text-white">
+                    <h5 class="modal-title"><i class="fas fa-exclamation-triangle"></i> Error</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body" id="errorMessage">
+                    <!-- Error message will be inserted here -->
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-danger" data-bs-dismiss="modal">OK</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,343 @@
+###############################################################################
+# Auto-Migration Workflow - Triggered on SQL file uploads
+#
+# Detects new migration files, validates them, and automatically applies
+# them with backup and rollback capabilities.
+###############################################################################
+name: Auto-Migration on SQL Upload
+
+on:
+  push:
+    paths:
+      - 'migrations/*.up.sql'
+    branches: [main]
+  pull_request:
+    paths:
+      - 'migrations/*.up.sql'
+
+jobs:
+  detect-new-migrations:
+    name: Detect New Migration Files
+    runs-on: ubuntu-latest
+    outputs:
+      new-migrations: ${{ steps.detect.outputs.files }}
+      has-new-migrations: ${{ steps.detect.outputs.has-new }}
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      
+      - name: Detect new migration files
+        id: detect
+        run: |
+          echo "🔍 Detecting new migration files..."
+          
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # For PRs, compare against base branch
+            NEW_FILES=$(git diff --name-only --diff-filter=A origin/${{ github.base_ref }}...HEAD | grep "migrations/.*\.up\.sql" || true)
+          else
+            # For pushes, compare with previous commit
+            NEW_FILES=$(git diff --name-only --diff-filter=A HEAD~1 HEAD | grep "migrations/.*\.up\.sql" || true)
+          fi
+          
+          echo "files=$NEW_FILES" >> $GITHUB_OUTPUT
+          
+          if [ -n "$NEW_FILES" ]; then
+            echo "has-new=true" >> $GITHUB_OUTPUT
+            echo "🆕 New migration files detected:"
+            echo "$NEW_FILES" | while read file; do
+              echo "  - $file"
+            done
+          else
+            echo "has-new=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ No new migration files detected"
+          fi
+
+  validate-sql-format:
+    name: Validate SQL File Format
+    runs-on: ubuntu-latest
+    needs: detect-new-migrations
+    if: needs.detect-new-migrations.outputs.has-new-migrations == 'true'
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Validate SQL file format and headers
+        run: |
+          echo "🔍 Validating SQL file format and required headers..."
+          
+          # Get new files from previous job
+          NEW_FILES="${{ needs.detect-new-migrations.outputs.new-migrations }}"
+          
+          for file in $NEW_FILES; do
+            echo "Checking $file..."
+            
+            # Check filename format (XXX_description.up.sql)
+            if [[ ! "$file" =~ migrations/[0-9]{3}_[a-zA-Z0-9_]+\.up\.sql$ ]]; then
+              echo "❌ Invalid filename format: $file"
+              echo "Expected format: migrations/XXX_description.up.sql"
+              exit 1
+            fi
+            
+            # Check required headers
+            if ! grep -q "^-- id:" "$file"; then
+              echo "❌ Missing required header '-- id:' in $file"
+              exit 1
+            fi
+            
+            if ! grep -q "^-- author:" "$file"; then
+              echo "❌ Missing required header '-- author:' in $file"
+              exit 1
+            fi
+            
+            if ! grep -q "^-- risk:" "$file"; then
+              echo "❌ Missing required header '-- risk:' in $file"
+              exit 1
+            fi
+            
+            # Extract and validate ID matches filename
+            FILE_ID=$(basename "$file" | cut -d'_' -f1)
+            HEADER_ID=$(grep "^-- id:" "$file" | sed 's/-- id: *//' | tr -d ' ')
+            
+            if [ "$FILE_ID" != "$HEADER_ID" ]; then
+              echo "❌ ID mismatch in $file: filename has '$FILE_ID' but header has '$HEADER_ID'"
+              exit 1
+            fi
+            
+            # Check for basic SQL syntax issues
+            if grep -q "DROP TABLE\|DROP DATABASE\|TRUNCATE" "$file"; then
+              ALLOW_DESTRUCTIVE=$(grep "^-- allowDestructive:" "$file" | sed 's/-- allowDestructive: *//' | tr -d ' ')
+              if [ "$ALLOW_DESTRUCTIVE" != "true" ]; then
+                echo "❌ Destructive operation detected in $file but allowDestructive is not set to true"
+                exit 1
+              fi
+            fi
+            
+            echo "✅ $file format is valid"
+          done
+          
+          echo "🎉 All SQL files are properly formatted!"
+
+  test-migrations:
+    name: Test Migration Application
+    runs-on: ubuntu-latest
+    needs: [detect-new-migrations, validate-sql-format]
+    if: needs.detect-new-migrations.outputs.has-new-migrations == 'true'
+    
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: testpw
+          MYSQL_DATABASE: migration_db_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -u root -ptestpw"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      
+      - name: Test migration application
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_USER: root
+          DB_PASSWORD: testpw
+          DB_NAME: migration_db_test
+        run: |
+          echo "🧪 Testing migration application..."
+          
+          # Validate all migrations
+          python -m src.migrate validate
+          
+          echo "📋 Migrations to be applied:"
+          python -m src.migrate status
+          
+          # Create pre-test backup
+          mysqldump -h 127.0.0.1 -P 3306 -u root -ptestpw \
+            --routines --triggers --events --single-transaction \
+            migration_db_test > backup_pre_test.sql
+          
+          # Apply migrations with error handling
+          if ! python -m src.migrate update; then
+            echo "❌ Migration application failed - rolling back..."
+            mysql -h 127.0.0.1 -P 3306 -u root -ptestpw migration_db_test < backup_pre_test.sql
+            exit 1
+          fi
+          
+          echo "✅ All migrations applied successfully!"
+          
+          # Verify checksums
+          python -m src.migrate verify
+          
+          echo "✅ Checksum verification passed!"
+      
+      - name: Test data pipeline
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_USER: root
+          DB_PASSWORD: testpw
+          DB_NAME: migration_db_test
+        run: |
+          echo "🔄 Testing data pipeline..."
+          python -m src.pipeline run --env ci
+          echo "✅ Pipeline test completed!"
+      
+      - name: Upload test backup
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-backup-${{ github.run_id }}
+          path: backup_pre_test.sql
+          retention-days: 7
+
+  comment-on-pr:
+    name: Comment on Pull Request
+    runs-on: ubuntu-latest
+    needs: [detect-new-migrations, validate-sql-format, test-migrations]
+    if: github.event_name == 'pull_request' && needs.detect-new-migrations.outputs.has-new-migrations == 'true'
+    
+    steps:
+      - name: Comment on PR with results
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const newFiles = `${{ needs.detect-new-migrations.outputs.new-migrations }}`.split('\n').filter(f => f.trim());
+            
+            let comment = `## 🚀 Migration Upload Results\n\n`;
+            
+            if (newFiles.length > 0) {
+              comment += `### ✅ Validation Results\n`;
+              comment += `- **Format Validation**: ✅ Passed\n`;
+              comment += `- **Migration Test**: ✅ Passed\n`;
+              comment += `- **Pipeline Test**: ✅ Passed\n\n`;
+              
+              comment += `### 📁 New Migration Files\n`;
+              newFiles.forEach(file => {
+                comment += `- \`${file}\`\n`;
+              });
+              
+              comment += `\n### 🎯 Next Steps\n`;
+              comment += `- **Merge this PR** to deploy to dev environment\n`;
+              comment += `- **Use "Deploy Prod" workflow** for production deployment\n`;
+              comment += `- **Backup artifacts** are available in the Actions tab\n\n`;
+              
+              comment += `### 🔄 Auto-Deployment\n`;
+              comment += `Upon merge, the following will happen automatically:\n`;
+              comment += `1. 💾 Pre-migration backup will be created\n`;
+              comment += `2. 🚀 Migrations will be applied to dev environment\n`;
+              comment += `3. 🔄 Data pipeline will be executed\n`;
+              comment += `4. 🛡️ Auto-rollback on failure\n`;
+            }
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  auto-deploy-dev:
+    name: Auto-Deploy to Dev (on merge)
+    runs-on: ubuntu-latest
+    needs: [detect-new-migrations, test-migrations]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-new-migrations.outputs.has-new-migrations == 'true'
+    environment: dev
+    
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: testpw
+          MYSQL_DATABASE: migration_db_dev
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -u root -ptestpw"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      
+      - name: Deploy new migrations to dev
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_USER: root
+          DB_PASSWORD: testpw
+          DB_NAME: migration_db_dev
+        run: |
+          echo "🚀 Deploying new migrations to dev environment..."
+          
+          # Create pre-deployment backup
+          ts=$(date -u +%Y%m%dT%H%M%SZ)
+          BACKUP_FILE="backup_dev_auto_${ts}.sql"
+          mysqldump -h 127.0.0.1 -P 3306 -u root -ptestpw \
+            --routines --triggers --events --single-transaction \
+            migration_db_dev > "$BACKUP_FILE"
+          echo "BACKUP_FILE=$BACKUP_FILE" >> $GITHUB_ENV
+          
+          # Apply migrations with auto-rollback
+          if ! python -m src.migrate update --context dev; then
+            echo "❌ Migration failed - executing auto-rollback..."
+            mysql -h 127.0.0.1 -P 3306 -u root -ptestpw migration_db_dev < "$BACKUP_FILE"
+            echo "🔄 Auto-rollback completed"
+            exit 1
+          fi
+          
+          echo "✅ Migrations applied successfully to dev!"
+      
+      - name: Run data pipeline
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_USER: root
+          DB_PASSWORD: testpw
+          DB_NAME: migration_db_dev
+        run: |
+          echo "🔄 Running data pipeline in dev..."
+          python -m src.pipeline run --env dev
+          echo "✅ Pipeline completed successfully!"
+      
+      - name: Upload deployment backup
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dev-deployment-backup-${{ github.run_id }}
+          path: backup_dev_auto_*.sql
+          retention-days: 30
+      
+      - name: Notify deployment success
+        if: success()
+        run: |
+          echo "🎉 Dev deployment completed successfully!"
+          echo "New migrations from this upload have been applied to the dev environment."
+          echo "Backup artifact: ${{ env.BACKUP_FILE }}"

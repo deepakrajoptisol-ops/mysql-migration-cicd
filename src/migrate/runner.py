@@ -399,46 +399,128 @@ def rollback_cmd(target_version: str, backup_file: str) -> None:
     with the backup, then removes migration records newer than target_version.
     """
     import subprocess
+    from datetime import datetime
     
     logger.warning(json.dumps({
         "event": "rollback_start", 
         "target": target_version, 
-        "backup": backup_file
+        "backup": backup_file,
+        "timestamp": datetime.now().isoformat()
     }))
+    
+    # Record rollback attempt in ops table
+    conn = get_conn()
+    rollback_run_id = str(uuid.uuid4())
+    
+    try:
+        # Record rollback start
+        execute(conn, """
+            INSERT INTO ops_rollback_runs (
+                run_id, target_version, backup_file, status, started_at
+            ) VALUES (%s, %s, %s, 'started', NOW())
+        """, (rollback_run_id, target_version, backup_file))
+        
+        # Get current version before rollback
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT ID, ORDEREXECUTED FROM DATABASECHANGELOG 
+            ORDER BY ORDEREXECUTED DESC LIMIT 1
+        """)
+        current_version = cursor.fetchone()
+        cursor.close()
+        
+        logger.info(json.dumps({
+            "event": "rollback_current_version",
+            "current": current_version['ID'] if current_version else None,
+            "target": target_version
+        }))
+        
+    except Exception as e:
+        logger.error(f"Failed to record rollback start: {e}")
+        # Continue with rollback even if logging fails
+    finally:
+        conn.close()
     
     # Restore from backup
     env = dict(os.environ)
     cmd = [
         "mysql", 
-        "-h", env["DB_HOST"], 
-        "-P", env["DB_PORT"],
-        "-u", env["DB_USER"], 
-        f"-p{env['DB_PASSWORD']}", 
-        env["DB_NAME"]
+        "-h", env.get("DB_HOST", "127.0.0.1"), 
+        "-P", env.get("DB_PORT", "3306"),
+        "-u", env.get("DB_USER", "root"), 
+        f"-p{env.get('DB_PASSWORD', 'testpw')}", 
+        env.get("DB_NAME", "migration_db")
     ]
     
-    with open(backup_file, 'r') as f:
-        result = subprocess.run(cmd, stdin=f, capture_output=True, text=True)
-    
-    if result.returncode != 0:
-        raise RuntimeError(f"Backup restore failed: {result.stderr}")
+    try:
+        with open(backup_file, 'r') as f:
+            result = subprocess.run(cmd, stdin=f, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            raise RuntimeError(f"Backup restore failed: {result.stderr}")
+        
+        logger.info(json.dumps({
+            "event": "backup_restored",
+            "backup_file": backup_file
+        }))
+        
+    except Exception as e:
+        # Record rollback failure
+        conn = get_conn()
+        try:
+            execute(conn, """
+                UPDATE ops_rollback_runs 
+                SET status = 'failed', error_message = %s, completed_at = NOW()
+                WHERE run_id = %s
+            """, (str(e), rollback_run_id))
+        finally:
+            conn.close()
+        raise
     
     # Clean up migration records newer than target
     conn = get_conn()
     try:
+        # Get target order for cleanup
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT ORDEREXECUTED FROM DATABASECHANGELOG WHERE ID = %s", (target_version,))
+        target_row = cursor.fetchone()
+        
+        if not target_row:
+            raise RuntimeError(f"Target version {target_version} not found in changelog")
+        
+        target_order = target_row['ORDEREXECUTED']
+        
+        # Remove newer migration records
+        cursor.execute("SELECT ID FROM DATABASECHANGELOG WHERE ORDEREXECUTED > %s", (target_order,))
+        removed_migrations = [row['ID'] for row in cursor.fetchall()]
+        
+        cursor.execute("DELETE FROM DATABASECHANGELOG WHERE ORDEREXECUTED > %s", (target_order,))
+        
+        # Record successful rollback
         execute(conn, """
-            DELETE FROM DATABASECHANGELOG 
-            WHERE ORDEREXECUTED > (
-                SELECT ORDEREXECUTED FROM (
-                    SELECT ORDEREXECUTED FROM DATABASECHANGELOG 
-                    WHERE ID = %s LIMIT 1
-                ) tmp
-            )
-        """, (target_version,))
+            UPDATE ops_rollback_runs 
+            SET status = 'completed', 
+                removed_migrations = %s,
+                completed_at = NOW()
+            WHERE run_id = %s
+        """, (json.dumps(removed_migrations), rollback_run_id))
+        
+        cursor.close()
         
         logger.info(json.dumps({
             "event": "rollback_complete", 
-            "target": target_version
+            "target": target_version,
+            "removed_migrations": removed_migrations,
+            "run_id": rollback_run_id
         }))
+        
+    except Exception as e:
+        # Record rollback failure
+        execute(conn, """
+            UPDATE ops_rollback_runs 
+            SET status = 'failed', error_message = %s, completed_at = NOW()
+            WHERE run_id = %s
+        """, (str(e), rollback_run_id))
+        raise
     finally:
         conn.close()
