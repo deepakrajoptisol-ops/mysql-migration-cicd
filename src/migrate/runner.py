@@ -348,8 +348,19 @@ def update_cmd(changelog_path: str = "changelog/changelog.yml",
             if key in applied:
                 old = applied[key]
                 if old["execType"] == "MARK_RAN":
+                    logger.info(json.dumps({
+                        "event": "changeset_already_mark_ran",
+                        "id": cs["id"], "file": cs["sqlFile"],
+                    }))
                     continue
                 if old["checksum"] != cs_checksum:
+                    if should_handle_gracefully():
+                        logger.warning(json.dumps({
+                            "event": "checksum_mismatch_skipped",
+                            "id": cs["id"], "file": cs["sqlFile"],
+                            "reason": "Checksum differs but graceful mode is on - skipping",
+                        }))
+                        continue
                     raise RuntimeError(
                         f"Checksum mismatch for changeset '{cs['id']}' by "
                         f"'{cs['author']}'. Expected {old['checksum']}, got "
@@ -365,17 +376,27 @@ def update_cmd(changelog_path: str = "changelog/changelog.yml",
             exec_type = evaluate_preconditions(conn, cs.get("preconditions", []))
             if exec_type == "SKIP":
                 order = _next_order(conn)
-                execute(conn, """
-                    INSERT INTO DATABASECHANGELOG
-                        (ID, AUTHOR, FILENAME, DATEEXECUTED, ORDEREXECUTED,
-                         EXECTYPE, MD5SUM, LABELS, CONTEXTS)
-                    VALUES (%s, %s, %s, NOW(), %s, 'MARK_RAN', %s, %s, %s)
-                """, (
-                    cs["id"], cs["author"], cs["sqlFile"], order,
-                    cs_checksum,
-                    ",".join(cs["labels"]),
-                    ",".join(cs["contexts"]),
-                ))
+                try:
+                    execute(conn, """
+                        INSERT INTO DATABASECHANGELOG
+                            (ID, AUTHOR, FILENAME, DATEEXECUTED, ORDEREXECUTED,
+                             EXECTYPE, MD5SUM, LABELS, CONTEXTS)
+                        VALUES (%s, %s, %s, NOW(), %s, 'MARK_RAN', %s, %s, %s)
+                    """, (
+                        cs["id"], cs["author"], cs["sqlFile"], order,
+                        cs_checksum,
+                        ",".join(cs["labels"]),
+                        ",".join(cs["contexts"]),
+                    ))
+                except Exception as log_exc:
+                    if "duplicate entry" in str(log_exc).lower():
+                        logger.warning(json.dumps({
+                            "event": "changelog_duplicate_skipped",
+                            "id": cs["id"], "file": cs["sqlFile"],
+                        }))
+                    else:
+                        raise
+                applied[key] = {"checksum": cs_checksum, "execType": "MARK_RAN"}
                 logger.info(json.dumps({
                     "event": "changeset_mark_ran", "id": cs["id"],
                 }))
@@ -433,17 +454,30 @@ def update_cmd(changelog_path: str = "changelog/changelog.yml",
                     ) from exc
 
             order = _next_order(conn)
-            execute(conn, """
-                INSERT INTO DATABASECHANGELOG
-                    (ID, AUTHOR, FILENAME, DATEEXECUTED, ORDEREXECUTED,
-                     EXECTYPE, MD5SUM, LABELS, CONTEXTS)
-                VALUES (%s, %s, %s, NOW(), %s, %s, %s, %s, %s)
-            """, (
-                cs["id"], cs["author"], cs["sqlFile"], order,
-                exec_type, cs_checksum,
-                ",".join(cs["labels"]),
-                ",".join(cs["contexts"]),
-            ))
+            try:
+                execute(conn, """
+                    INSERT INTO DATABASECHANGELOG
+                        (ID, AUTHOR, FILENAME, DATEEXECUTED, ORDEREXECUTED,
+                         EXECTYPE, MD5SUM, LABELS, CONTEXTS)
+                    VALUES (%s, %s, %s, NOW(), %s, %s, %s, %s, %s)
+                """, (
+                    cs["id"], cs["author"], cs["sqlFile"], order,
+                    exec_type, cs_checksum,
+                    ",".join(cs["labels"]),
+                    ",".join(cs["contexts"]),
+                ))
+            except Exception as log_exc:
+                if "duplicate entry" in str(log_exc).lower():
+                    logger.warning(json.dumps({
+                        "event": "changelog_duplicate_skipped",
+                        "id": cs["id"], "file": cs["sqlFile"],
+                    }))
+                else:
+                    raise
+
+            # Update in-memory applied dict so later changesets with
+            # the same (id, author) are skipped immediately.
+            applied[key] = {"checksum": cs_checksum, "execType": exec_type}
             applied_count += 1
             
             if exec_type == "EXECUTED":
