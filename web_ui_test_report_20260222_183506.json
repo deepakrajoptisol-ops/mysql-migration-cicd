@@ -1,0 +1,148 @@
+{
+  "timestamp": "2026-02-22T18:35:06.430034",
+  "base_url": "http://localhost:8000",
+  "total_tests": 14,
+  "passed_tests": 13,
+  "failed_tests": 1,
+  "test_results": [
+    {
+      "test": "Server Health Check",
+      "success": true,
+      "message": "Server responded with status 200",
+      "details": {
+        "response_time": 0.003951
+      },
+      "timestamp": "2026-02-22T18:35:04.836740"
+    },
+    {
+      "test": "API: Migration Status",
+      "success": true,
+      "message": "Status: 7 applied, 0 pending",
+      "details": {
+        "pending_migrations": 0,
+        "total_migrations": 0,
+        "applied_migrations": 7,
+        "pending_details": []
+      },
+      "timestamp": "2026-02-22T18:35:04.903344"
+    },
+    {
+      "test": "API: Migration Versions",
+      "success": true,
+      "message": "Found 0 total versions",
+      "details": {
+        "versions_count": 0
+      },
+      "timestamp": "2026-02-22T18:35:04.970390"
+    },
+    {
+      "test": "API: Backups List",
+      "success": true,
+      "message": "Found 0 backup files",
+      "details": {
+        "backups": []
+      },
+      "timestamp": "2026-02-22T18:35:04.974136"
+    },
+    {
+      "test": "API: Create Backup",
+      "success": true,
+      "message": "Created backup: backup_manual_20260222T183504Z.sql",
+      "details": {
+        "size": 34408
+      },
+      "timestamp": "2026-02-22T18:35:05.332642"
+    },
+    {
+      "test": "API: Upload Validation",
+      "success": true,
+      "message": "Correctly rejected invalid data with status 400",
+      "details": {
+        "status_code": 400
+      },
+      "timestamp": "2026-02-22T18:35:06.173547"
+    },
+    {
+      "test": "API: Rollback Validation",
+      "success": true,
+      "message": "Correctly rejected invalid rollback with status 500",
+      "details": {
+        "status_code": 500
+      },
+      "timestamp": "2026-02-22T18:35:06.177672"
+    },
+    {
+      "test": "Frontend Resource: /static/app.js",
+      "success": true,
+      "message": "Status 200, Size: 18778 bytes",
+      "details": null,
+      "timestamp": "2026-02-22T18:35:06.181329"
+    },
+    {
+      "test": "Frontend Resource: /",
+      "success": true,
+      "message": "Status 200, Size: 20413 bytes",
+      "details": null,
+      "timestamp": "2026-02-22T18:35:06.185081"
+    },
+    {
+      "test": "Dashboard Data Consistency",
+      "success": false,
+      "message": "Total: 0=0, Applied: 7=7, Pending: 0=-7",
+      "details": {
+        "status_data": {
+          "pending_migrations": 0,
+          "total_migrations": 0,
+          "applied_migrations": 7,
+          "pending_details": []
+        },
+        "versions_data": {
+          "total_count": 0,
+          "applied_count": 7,
+          "pending_count": -7
+        }
+      },
+      "timestamp": "2026-02-22T18:35:06.305528"
+    },
+    {
+      "test": "Error Handling: 404",
+      "success": true,
+      "message": "Non-existent endpoint returned status 404",
+      "details": {
+        "expected": 404,
+        "actual": 404
+      },
+      "timestamp": "2026-02-22T18:35:06.308732"
+    },
+    {
+      "test": "Performance: /api/migrations/status",
+      "success": true,
+      "message": "Response time: 0.065s",
+      "details": {
+        "response_time": 0.06461882591247559,
+        "status_code": 200
+      },
+      "timestamp": "2026-02-22T18:35:06.373431"
+    },
+    {
+      "test": "Performance: /api/migrations/versions",
+      "success": true,
+      "message": "Response time: 0.053s",
+      "details": {
+        "response_time": 0.05311012268066406,
+        "status_code": 200
+      },
+      "timestamp": "2026-02-22T18:35:06.426616"
+    },
+    {
+      "test": "Performance: /api/backups",
+      "success": true,
+      "message": "Response time: 0.003s",
+      "details": {
+        "response_time": 0.0032510757446289062,
+        "status_code": 200
+      },
+      "timestamp": "2026-02-22T18:35:06.429934"
+    }
+  ]
+}

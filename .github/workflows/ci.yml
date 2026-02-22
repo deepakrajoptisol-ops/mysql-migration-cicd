@@ -1,46 +1,48 @@
 ###############################################################################
-# CI workflow — runs on every PR and push
+# CI workflow — runs on PRs for validation only
 #
-# Spins up an ephemeral MySQL 8 service container, validates the changelog,
-# applies all migrations, runs the demo pipeline, and verifies DQ checks.
-# On migration failure: automatically restores the pre-migration backup.
+# Validates migration files format and syntax without executing them.
+# No database operations - only static validation.
 ###############################################################################
-name: CI
+name: CI Validation
 
 on:
   pull_request:
-  push:
-    branches: [main]
+    paths:
+      - 'migrations/*.up.sql'
 
 jobs:
-  test:
+  validate-migrations:
+    name: Validate Migration Files
     runs-on: ubuntu-latest
 
     services:
       mysql:
         image: mysql:8.0
         env:
-          MYSQL_ROOT_PASSWORD: ci_root_pw
-          MYSQL_DATABASE: migration_db
+          MYSQL_ROOT_PASSWORD: ci_test_pw
+          MYSQL_DATABASE: migration_test_db
         ports:
           - 3306:3306
         options: >-
-          --health-cmd="mysqladmin ping -h 127.0.0.1 -u root -pci_root_pw"
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -u root -pci_test_pw"
           --health-interval=10s
           --health-timeout=5s
           --health-retries=5
 
     env:
       DB_HOST: 127.0.0.1
-      DB_PORT: "3306"
+      DB_PORT: 3306
       DB_USER: root
-      DB_PASSWORD: ci_root_pw
-      DB_NAME: migration_db
+      DB_PASSWORD: ci_test_pw
+      DB_NAME: migration_test_db
       ENV_NAME: ci
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -50,51 +52,127 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # ---------- Migration: validate + plan --------------------------------
-      - name: Validate changelog (offline)
-        run: python -m src.migrate validate
-
-      - name: Show pending changesets
-        run: python -m src.migrate status
-
-      - name: Dry-run — print SQL that would execute
-        run: python -m src.migrate update_sql
-
-      # ---------- Migration: backup + apply + auto-rollback -----------------
-      - name: Pre-migration backup
+      - name: Detect new migration files
+        id: detect
         run: |
-          ts=$(date -u +%Y%m%dT%H%M%SZ)
-          BACKUP_FILE="backup_ci_${ts}.sql"
-          mysqldump -h 127.0.0.1 -P 3306 -u root -pci_root_pw \
-            --routines --triggers --events --single-transaction \
-            migration_db > "$BACKUP_FILE"
-          echo "BACKUP_FILE=$BACKUP_FILE" >> $GITHUB_ENV
+          echo "🔍 Detecting new migration files in PR..."
+          NEW_FILES=$(git diff --name-only --diff-filter=A origin/${{ github.base_ref }}...HEAD | grep "migrations/.*\.up\.sql" || true)
+          
+          if [ -n "$NEW_FILES" ]; then
+            echo "files<<EOF" >> $GITHUB_OUTPUT
+            echo "$NEW_FILES" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            echo "has-new=true" >> $GITHUB_OUTPUT
+            echo "🆕 New migration files detected:"
+            echo "$NEW_FILES" | while read file; do
+              echo "  - $file"
+            done
+          else
+            echo "has-new=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ No new migration files detected"
+          fi
 
-      - name: Apply migrations
-        id: migrate
-        run: python -m src.migrate update
-
-      - name: Auto-rollback on migration failure
-        if: failure() && steps.migrate.outcome == 'failure'
+      - name: Validate SQL file format and headers
+        if: steps.detect.outputs.has-new == 'true'
         run: |
-          echo "::error::Migration failed — restoring from $BACKUP_FILE"
-          mysql -h 127.0.0.1 -P 3306 -u root -pci_root_pw \
-            migration_db < "$BACKUP_FILE"
-          echo "Rollback to previous version complete."
+          echo "🔍 Validating SQL file format and required headers..."
+          
+          NEW_FILES="${{ steps.detect.outputs.files }}"
+          
+          for file in $NEW_FILES; do
+            echo "Checking $file..."
+            
+            # Check filename format (XXX_description.up.sql)
+            if [[ ! "$file" =~ migrations/[0-9]{3}_[a-zA-Z0-9_]+\.up\.sql$ ]]; then
+              echo "❌ Invalid filename format: $file"
+              echo "Expected format: migrations/XXX_description.up.sql"
+              exit 1
+            fi
+            
+            # Check required headers
+            if ! grep -q "^-- id:" "$file"; then
+              echo "❌ Missing required header '-- id:' in $file"
+              exit 1
+            fi
+            
+            if ! grep -q "^-- author:" "$file"; then
+              echo "❌ Missing required header '-- author:' in $file"
+              exit 1
+            fi
+            
+            if ! grep -q "^-- risk:" "$file"; then
+              echo "❌ Missing required header '-- risk:' in $file"
+              exit 1
+            fi
+            
+            # Extract and validate ID matches filename
+            FILE_ID=$(basename "$file" | cut -d'_' -f1)
+            HEADER_ID=$(grep "^-- id:" "$file" | sed 's/-- id: *//' | tr -d ' ')
+            
+            if [ "$FILE_ID" != "$HEADER_ID" ]; then
+              echo "❌ ID mismatch in $file: filename has '$FILE_ID' but header has '$HEADER_ID'"
+              exit 1
+            fi
+            
+            # Check for basic SQL syntax issues
+            if grep -q "DROP TABLE\|DROP DATABASE\|TRUNCATE" "$file"; then
+              ALLOW_DESTRUCTIVE=$(grep "^-- allowDestructive:" "$file" | sed 's/-- allowDestructive: *//' | tr -d ' ')
+              if [ "$ALLOW_DESTRUCTIVE" != "true" ]; then
+                echo "❌ Destructive operation detected in $file but allowDestructive is not set to true"
+                exit 1
+              fi
+            fi
+            
+            echo "✅ $file format is valid"
+          done
+          
+          echo "🎉 All SQL files are properly formatted!"
 
-      # ---------- Pipeline: ingest → transform → validate -------------------
-      - name: Run data pipeline
-        run: python -m src.pipeline run --env ci
+      - name: Offline validation (no database)
+        run: |
+          echo "🔍 Running offline migration validation..."
+          # This validates the changelog format without connecting to database
+          python -c "
+          from src.migrate.changelog import auto_generate_changelog
+          try:
+              changelog = auto_generate_changelog('migrations')
+              print(f'✅ Changelog validation passed - {len(changelog)} migrations found')
+          except Exception as e:
+              print(f'❌ Changelog validation failed: {e}')
+              exit(1)
+          "
 
-      # ---------- Post-migration verification --------------------------------
-      - name: Verify checksums
-        run: python -m src.migrate verify
-
-      # ---------- Artifacts --------------------------------------------------
-      - name: Upload backup artifact
-        if: always()
-        uses: actions/upload-artifact@v4
+      - name: Comment on PR with validation results
+        if: steps.detect.outputs.has-new == 'true'
+        uses: actions/github-script@v7
         with:
-          name: pre-migration-backup-ci
-          path: backup_ci_*.sql
-          retention-days: 7
+          script: |
+            const newFiles = `${{ steps.detect.outputs.files }}`.split('\n').filter(f => f.trim());
+            
+            let comment = `## 🔍 Migration Validation Results\n\n`;
+            comment += `### ✅ Validation Status\n`;
+            comment += `- **Format Validation**: ✅ Passed\n`;
+            comment += `- **Header Validation**: ✅ Passed\n`;
+            comment += `- **Offline Validation**: ✅ Passed\n\n`;
+            
+            comment += `### 📁 New Migration Files\n`;
+            newFiles.forEach(file => {
+              comment += `- \`${file}\`\n`;
+            });
+            
+            comment += `\n### 🎯 Next Steps\n`;
+            comment += `1. **Review and approve this PR** to merge to main\n`;
+            comment += `2. **Auto-deployment to dev** will trigger after merge\n`;
+            comment += `3. **Manual production deployment** available after dev success\n\n`;
+            
+            comment += `### ⚠️ Important Notes\n`;
+            comment += `- No database operations performed during validation\n`;
+            comment += `- Actual migration testing happens in dev environment\n`;
+            comment += `- Production deployment requires manual approval\n`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });

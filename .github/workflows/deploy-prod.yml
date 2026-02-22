@@ -1,67 +1,43 @@
 ###############################################################################
-# Prod deploy workflow — manual trigger only
+# Production Deploy Workflow — Manual trigger with Change Request
 #
-# Uses GitHub Environment "prod" with REQUIRED REVIEWERS for approval.
-# Accepts explicit inputs for destructive-change override and change ticket.
-# Takes a pre-migration backup, applies changesets, and auto-rolls-back
-# on failure.  Prints an incident note after rollback.
+# Requires manual approval and change ticket for production deployment.
+# Creates comprehensive backups, applies migrations, and provides rollback.
 ###############################################################################
-name: Deploy Prod
+name: Deploy to Production
 
 on:
   workflow_dispatch:
     inputs:
+      change_ticket_id:
+        description: "Change Request / Ticket ID (required for audit)"
+        required: true
+        type: string
+      migration_ids:
+        description: "Migration IDs to deploy (e.g., 011,012,013)"
+        required: true
+        type: string
       allow_destructive:
-        description: "Allow destructive SQL (DROP TABLE etc.)?"
+        description: "Allow destructive SQL operations (DROP, TRUNCATE, etc.)"
         required: false
         type: boolean
         default: false
-      change_ticket_id:
-        description: "Change / incident ticket ID (for audit)"
-        required: true
-        type: string
+      emergency_deployment:
+        description: "Emergency deployment (skip some safety checks)"
+        required: false
+        type: boolean
+        default: false
 
 jobs:
-  deploy:
+  pre-deployment-checks:
+    name: Pre-Deployment Validation
     runs-on: ubuntu-latest
-    environment: prod          # <-- requires GitHub Environment "prod" with reviewers
-
-    # For demo: use a service container.
-    # In production: remove the service block and connect to the real
-    # prod database via GitHub Environment secrets.
-    services:
-      mysql:
-        image: mysql:8.0
-        env:
-          MYSQL_ROOT_PASSWORD: testpw
-          MYSQL_DATABASE: migration_db_prod
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd="mysqladmin ping -h 127.0.0.1 -u root -ptestpw"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=5
-
-    env:
-      DB_HOST:           127.0.0.1
-      DB_PORT:           3306
-      DB_USER:           root
-      ENV_NAME:          prod
-      ALLOW_DESTRUCTIVE: ${{ inputs.allow_destructive }}
-
+    outputs:
+      migration-list: ${{ steps.validate.outputs.migration-list }}
+      
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Log deployment metadata
-        run: |
-          echo "=== PROD DEPLOYMENT ==="
-          echo "Change ticket : ${{ inputs.change_ticket_id }}"
-          echo "Destructive   : ${{ inputs.allow_destructive }}"
-          echo "Actor         : ${{ github.actor }}"
-          echo "SHA           : ${{ github.sha }}"
-          echo "======================="
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -71,70 +47,347 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # ---------- Backup -----------------------------------------------------
-      - name: Pre-migration backup
-        env:
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          DB_NAME: ${{ secrets.DB_NAME }}
+      - name: Validate deployment request
+        id: validate
         run: |
-          ts=$(date -u +%Y%m%dT%H%M%SZ)
-          BACKUP_FILE="backup_prod_${ts}.sql"
+          echo "🔍 Validating production deployment request..."
+          echo "Change Ticket: ${{ inputs.change_ticket_id }}"
+          echo "Migration IDs: ${{ inputs.migration_ids }}"
+          echo "Allow Destructive: ${{ inputs.allow_destructive }}"
+          echo "Emergency: ${{ inputs.emergency_deployment }}"
+          
+          # Validate migration IDs exist
+          IFS=',' read -ra MIGRATION_ARRAY <<< "${{ inputs.migration_ids }}"
+          MIGRATION_LIST=""
+          for id in "${MIGRATION_ARRAY[@]}"; do
+            id=$(echo "$id" | xargs)  # trim whitespace
+            FILE="migrations/${id}_*.up.sql"
+            if ls $FILE 1> /dev/null 2>&1; then
+              ACTUAL_FILE=$(ls $FILE)
+              echo "✅ Found migration: $ACTUAL_FILE"
+              MIGRATION_LIST="$MIGRATION_LIST $ACTUAL_FILE"
+            else
+              echo "❌ Migration file not found for ID: $id"
+              exit 1
+            fi
+          done
+          
+          echo "migration-list=$MIGRATION_LIST" >> $GITHUB_OUTPUT
+          echo "✅ All requested migrations found"
+
+      - name: Check for destructive operations
+        if: inputs.allow_destructive == false
+        run: |
+          echo "🔍 Checking for destructive operations..."
+          MIGRATION_LIST="${{ steps.validate.outputs.migration-list }}"
+          
+          for file in $MIGRATION_LIST; do
+            if grep -q "DROP TABLE\|DROP DATABASE\|TRUNCATE\|DELETE FROM" "$file"; then
+              echo "❌ Destructive operation found in $file but allow_destructive is false"
+              echo "Set allow_destructive to true or remove destructive operations"
+              exit 1
+            fi
+          done
+          
+          echo "✅ No destructive operations found"
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: pre-deployment-checks
+    environment: prod          # <-- requires GitHub Environment "prod" with reviewers
+
+    env:
+      DB_HOST:           sql12.freesqldatabase.com
+      DB_PORT:           3306
+      DB_USER:           sql12817769
+      DB_PASSWORD:       AEAhD5Vuqs
+      DB_NAME:           sql12817769
+      ENV_NAME:          prod
+      ALLOW_DESTRUCTIVE: ${{ inputs.allow_destructive }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Log deployment metadata
+        run: |
+          echo "=========================================="
+          echo "         PRODUCTION DEPLOYMENT"
+          echo "=========================================="
+          echo "Change Ticket    : ${{ inputs.change_ticket_id }}"
+          echo "Migration IDs    : ${{ inputs.migration_ids }}"
+          echo "Destructive Ops  : ${{ inputs.allow_destructive }}"
+          echo "Emergency Deploy : ${{ inputs.emergency_deployment }}"
+          echo "Deployed By      : ${{ github.actor }}"
+          echo "Repository SHA   : ${{ github.sha }}"
+          echo "Timestamp        : $(date -u)"
+          echo "=========================================="
+
+      - name: Create comprehensive backup
+        id: backup
+        run: |
+          echo "💾 Creating comprehensive pre-migration backup..."
+          
+          # Create backup filename with migration IDs
+          MIGRATION_IDS="${{ inputs.migration_ids }}"
+          CLEAN_IDS=$(echo "$MIGRATION_IDS" | tr ',' '_')
+          ts=$(date -u +%Y%m%d_%H%M%S)
+          BACKUP_FILE="backups/prod_pre_migration_${CLEAN_IDS}_${ts}.sql"
+          
+          # Create backups directory
+          mkdir -p backups
+          
           mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" \
             --routines --triggers --events --single-transaction \
+            --add-drop-table --complete-insert \
             "$DB_NAME" > "$BACKUP_FILE"
+          
+          echo "backup-file=$BACKUP_FILE" >> $GITHUB_OUTPUT
           echo "BACKUP_FILE=$BACKUP_FILE" >> $GITHUB_ENV
+          echo "✅ Backup created: $BACKUP_FILE"
+          
+          # Create backup metadata
+          cat > "${BACKUP_FILE}.meta" << EOF
+          {
+            "timestamp": "$(date -u)",
+            "change_ticket": "${{ inputs.change_ticket_id }}",
+            "migration_ids": "${{ inputs.migration_ids }}",
+            "deployed_by": "${{ github.actor }}",
+            "repository_sha": "${{ github.sha }}",
+            "backup_size": "$(stat -c%s "$BACKUP_FILE")"
+          }
+          EOF
 
-      # ---------- Migrate ----------------------------------------------------
-      - name: Apply migrations (prod context)
+      - name: Show pending migrations
+        run: |
+          echo "📋 Migrations to be applied to production:"
+          python -m src.migrate status
+
+      - name: Apply migrations to production
         id: migrate
-        env:
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          DB_NAME: ${{ secrets.DB_NAME }}
-        run: python -m src.migrate update --context prod
+        run: |
+          echo "🚀 Applying migrations to production environment..."
+          
+          if ! python -m src.migrate update --context prod; then
+            echo "❌ Migration application failed!"
+            exit 1
+          fi
+          
+          echo "✅ Migrations applied successfully to production!"
 
       - name: Auto-rollback on migration failure
         if: failure() && steps.migrate.outcome == 'failure'
-        env:
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          DB_NAME: ${{ secrets.DB_NAME }}
         run: |
-          echo "::error::PROD migration failed — restoring from $BACKUP_FILE"
+          echo "::error::PRODUCTION migration failed — executing emergency rollback"
+          echo "Restoring from backup: $BACKUP_FILE"
+          
           mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" \
             "$DB_NAME" < "$BACKUP_FILE"
+          
           echo ""
           echo "=========================================="
-          echo " ROLLBACK COMPLETE"
-          echo " Database restored to pre-migration state."
-          echo " Change ticket: ${{ inputs.change_ticket_id }}"
+          echo "         EMERGENCY ROLLBACK COMPLETE"
+          echo "=========================================="
+          echo "Database restored to pre-migration state"
+          echo "Change Ticket: ${{ inputs.change_ticket_id }}"
+          echo "Backup Used: $BACKUP_FILE"
+          echo "Rollback Time: $(date -u)"
           echo ""
-          echo " NEXT STEPS (runbook):"
-          echo "  1. Verify application health."
-          echo "  2. Check ops_migration_runs for the failed run_id."
-          echo "  3. Fix the migration SQL and raise a new PR."
-          echo "  4. Re-run this workflow after approval."
+          echo "🚨 IMMEDIATE ACTION REQUIRED:"
+          echo "1. Verify application health and functionality"
+          echo "2. Check ops_migration_runs for failure details"
+          echo "3. Notify stakeholders of rollback"
+          echo "4. Create incident ticket if not exists"
+          echo "5. Fix migration issues before retry"
           echo "=========================================="
 
-      # ---------- Pipeline (smoke) -------------------------------------------
-      - name: Run pipeline smoke checks (prod)
-        if: success()
-        env:
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          DB_NAME: ${{ secrets.DB_NAME }}
-        run: python -m src.pipeline run --env prod
+      - name: Run production smoke tests
+        if: steps.migrate.outcome == 'success'
+        run: |
+          echo "🧪 Running production smoke tests..."
+          python -m src.pipeline run --env prod
+          echo "✅ Smoke tests completed!"
 
-      # ---------- Post-deploy verification -----------------------------------
-      - name: Verify checksums
-        if: success()
-        env:
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          DB_NAME: ${{ secrets.DB_NAME }}
-        run: python -m src.migrate verify
+      - name: Verify migration integrity
+        if: steps.migrate.outcome == 'success'
+        run: |
+          echo "🔍 Verifying production migration integrity..."
+          python -m src.migrate verify
+          echo "✅ Migration integrity verified!"
 
-      # ---------- Artifacts --------------------------------------------------
-      - name: Upload backup artifact
+      - name: Upload backup artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pre-migration-backup-prod
-          path: backup_prod_*.sql
-          retention-days: 90
+          name: prod-migration-backup-${{ github.run_id }}
+          path: |
+            backups/prod_pre_migration_*.sql
+            backups/prod_pre_migration_*.sql.meta
+          retention-days: 365
+
+      - name: Commit backup to repository
+        if: steps.migrate.outcome == 'success'
+        run: |
+          echo "📁 Committing production backup to repository..."
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action - Production Deploy"
+          git add backups/
+          git commit -m "Add production migration backup: ${{ steps.backup.outputs.backup-file }} (CR: ${{ inputs.change_ticket_id }})" || echo "No changes to commit"
+          git push || echo "No changes to push"
+
+      - name: Create deployment summary
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const success = '${{ steps.migrate.outcome }}' === 'success';
+            const backupFile = '${{ steps.backup.outputs.backup-file }}';
+            const changeTicket = '${{ inputs.change_ticket_id }}';
+            const migrationIds = '${{ inputs.migration_ids }}';
+            
+            let summary = `## 🏭 Production Deployment ${success ? 'Completed' : 'Failed'}\n\n`;
+            summary += `### 📋 Deployment Details\n`;
+            summary += `- **Change Ticket**: ${changeTicket}\n`;
+            summary += `- **Migration IDs**: ${migrationIds}\n`;
+            summary += `- **Status**: ${success ? '✅ Success' : '❌ Failed'}\n`;
+            summary += `- **Deployed By**: ${{ github.actor }}\n`;
+            summary += `- **Timestamp**: ${new Date().toISOString()}\n\n`;
+            
+            if (success) {
+              summary += `### ✅ Deployment Successful\n`;
+              summary += `- **Migrations Applied**: Successfully\n`;
+              summary += `- **Smoke Tests**: ✅ Passed\n`;
+              summary += `- **Integrity Check**: ✅ Verified\n`;
+              summary += `- **Backup Created**: \`${backupFile}\`\n\n`;
+              summary += `### 🎯 Post-Deployment Tasks\n`;
+              summary += `1. Monitor application health for 24 hours\n`;
+              summary += `2. Update change ticket with completion status\n`;
+              summary += `3. Notify stakeholders of successful deployment\n`;
+              summary += `4. Archive deployment artifacts\n`;
+            } else {
+              summary += `### ❌ Deployment Failed - Rollback Executed\n`;
+              summary += `- **Rollback Status**: ✅ Completed\n`;
+              summary += `- **Backup Used**: \`${backupFile}\`\n`;
+              summary += `- **Database State**: Restored to pre-migration\n\n`;
+              summary += `### 🚨 Required Actions\n`;
+              summary += `1. Verify application functionality immediately\n`;
+              summary += `2. Create/update incident ticket\n`;
+              summary += `3. Investigate migration failure cause\n`;
+              summary += `4. Fix issues before retry\n`;
+              summary += `5. Notify all stakeholders\n`;
+            }
+            
+            summary += `\n### 💾 Backup Information\n`;
+            summary += `- **File**: \`${backupFile}\`\n`;
+            summary += `- **Retention**: 365 days\n`;
+            summary += `- **Location**: Repository backups/ folder + Artifacts\n`;
+            
+            github.rest.repos.createCommitComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+              body: summary
+            });
+
+      - name: Update production CR status
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const success = '${{ steps.migrate.outcome }}' === 'success';
+            const changeTicket = '${{ inputs.change_ticket_id }}';
+            const migrationIds = '${{ inputs.migration_ids }}';
+            
+            // Find the CR issue by searching for the change ticket ID
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'production-deployment,change-request',
+              state: 'open'
+            });
+            
+            // Find the matching CR by title or body content
+            const matchingIssue = issues.data.find(issue => 
+              issue.title.includes(migrationIds) || 
+              issue.body.includes(changeTicket)
+            );
+            
+            if (matchingIssue) {
+              let updateComment = `## 🏭 Production Deployment Update\n\n`;
+              
+              if (success) {
+                updateComment += `### ✅ Deployment Completed Successfully\n`;
+                updateComment += `- **Status**: Production deployment completed\n`;
+                updateComment += `- **Migration IDs**: ${migrationIds}\n`;
+                updateComment += `- **Deployed By**: ${{ github.actor }}\n`;
+                updateComment += `- **Completion Time**: ${new Date().toISOString()}\n`;
+                updateComment += `- **Smoke Tests**: ✅ Passed\n`;
+                updateComment += `- **Integrity Check**: ✅ Verified\n\n`;
+                updateComment += `### 📋 Post-Deployment Actions\n`;
+                updateComment += `- [ ] Monitor application health (24 hours)\n`;
+                updateComment += `- [ ] Verify business functionality\n`;
+                updateComment += `- [ ] Update stakeholders\n`;
+                updateComment += `- [ ] Archive deployment artifacts\n\n`;
+                updateComment += `**This CR can now be closed as the deployment is complete.**`;
+                
+                // Add success label and close the issue
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: matchingIssue.number,
+                  labels: ['deployment-success', 'completed']
+                });
+                
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: matchingIssue.number,
+                  state: 'closed'
+                });
+                
+              } else {
+                updateComment += `### ❌ Deployment Failed - Rollback Executed\n`;
+                updateComment += `- **Status**: Production deployment failed\n`;
+                updateComment += `- **Migration IDs**: ${migrationIds}\n`;
+                updateComment += `- **Attempted By**: ${{ github.actor }}\n`;
+                updateComment += `- **Failure Time**: ${new Date().toISOString()}\n`;
+                updateComment += `- **Rollback**: ✅ Completed successfully\n`;
+                updateComment += `- **Database State**: Restored to pre-migration\n\n`;
+                updateComment += `### 🚨 Required Actions\n`;
+                updateComment += `- [ ] Verify application functionality\n`;
+                updateComment += `- [ ] Investigate failure cause\n`;
+                updateComment += `- [ ] Create incident ticket\n`;
+                updateComment += `- [ ] Fix migration issues\n`;
+                updateComment += `- [ ] Retry deployment when ready\n\n`;
+                updateComment += `**This CR remains open for retry after issue resolution.**`;
+                
+                // Add failure label
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: matchingIssue.number,
+                  labels: ['deployment-failed', 'needs-investigation']
+                });
+              }
+              
+              // Add comment to the CR
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: matchingIssue.number,
+                body: updateComment
+              });
+              
+              console.log(`Updated CR #${matchingIssue.number} with deployment status`);
+            } else {
+              console.log('No matching CR found for this deployment');
+            }

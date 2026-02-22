@@ -21,10 +21,20 @@ import requests
 
 # Load environment variables
 from dotenv import load_dotenv
-env_file = Path(__file__).parent.parent / "env.local"
+import os
+
+# Determine which environment file to load
+env_name = os.getenv('ENVIRONMENT', 'dev')  # Default to dev
+if env_name == 'test':
+    env_file = Path(__file__).parent.parent / "env.test"
+else:
+    env_file = Path(__file__).parent.parent / "env.local"
+
 if env_file.exists():
     load_dotenv(env_file)
-    print(f"Loaded environment from {env_file}")
+    print(f"Loaded environment from {env_file} (environment: {env_name})")
+else:
+    print(f"Warning: Environment file {env_file} not found")
 
 # Import our existing migration system
 import sys

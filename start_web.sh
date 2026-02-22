@@ -25,16 +25,20 @@ source venv/bin/activate
 pip install -r web/requirements.txt > /dev/null 2>&1
 
 # Load environment variables
-if [ -f "env.local" ]; then
+ENVIRONMENT=${ENVIRONMENT:-dev}
+if [ "$ENVIRONMENT" = "test" ] && [ -f "env.test" ]; then
+    export $(cat env.test | grep -v '^#' | xargs)
+    echo "✅ Loaded test environment from env.test"
+elif [ -f "env.local" ]; then
     export $(cat env.local | grep -v '^#' | xargs)
-    echo "✅ Loaded environment from env.local"
+    echo "✅ Loaded dev environment from env.local"
 else
-    echo "⚠️ No env.local found, using defaults"
-    export DB_HOST=127.0.0.1
-    export DB_PORT=3307
-    export DB_USER=root
-    export DB_PASSWORD=testpw
-    export DB_NAME=migration_db
+    echo "⚠️ No environment file found, using defaults"
+    export DB_HOST=sql12.freesqldatabase.com
+    export DB_PORT=3306
+    export DB_USER=sql12817767
+    export DB_PASSWORD=Ajb7KukR9R
+    export DB_NAME=sql12817767
 fi
 
 # Check database connection
