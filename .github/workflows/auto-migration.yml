@@ -84,7 +84,7 @@ jobs:
           mkdir -p backups
           
           mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" \
-            --single-transaction --no-tablespaces \
+            --single-transaction --no-tablespaces --skip-triggers --skip-events \
             "$DB_NAME" > "$BACKUP_FILE"
           
           echo "backup-file=$BACKUP_FILE" >> $GITHUB_OUTPUT

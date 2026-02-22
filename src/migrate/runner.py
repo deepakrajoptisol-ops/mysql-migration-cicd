@@ -230,7 +230,7 @@ def create_backup(backup_file: str = None, environment: str = "unknown") -> str:
         '-P', env.get('DB_PORT', '3307'),  # Use correct port
         '-u', env.get('DB_USER', 'root'),
         f'-p{env.get("DB_PASSWORD", "testpw")}',
-        '--single-transaction', '--no-tablespaces',
+        '--single-transaction', '--no-tablespaces', '--skip-triggers', '--skip-events',
         env.get('DB_NAME', 'migration_db')
     ]
     
