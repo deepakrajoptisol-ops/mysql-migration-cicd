@@ -98,11 +98,11 @@ jobs:
     environment: prod          # <-- requires GitHub Environment "prod" with reviewers
 
     env:
-      DB_HOST:           sql12.freesqldatabase.com
-      DB_PORT:           3306
-      DB_USER:           sql12817769
-      DB_PASSWORD:       AEAhD5Vuqs
-      DB_NAME:           sql12817769
+      DB_HOST:           ${{ secrets.PROD_DB_HOST }}
+      DB_PORT:           ${{ secrets.PROD_DB_PORT }}
+      DB_USER:           ${{ secrets.PROD_DB_USER }}
+      DB_PASSWORD:       ${{ secrets.PROD_DB_PASSWORD }}
+      DB_NAME:           ${{ secrets.PROD_DB_NAME }}
       ENV_NAME:          prod
       ALLOW_DESTRUCTIVE: ${{ inputs.allow_destructive }}
 

@@ -61,11 +61,11 @@ jobs:
         id: backup
         if: steps.detect.outputs.has-new == 'true'
         env:
-          DB_HOST: sql12.freesqldatabase.com
-          DB_PORT: 3306
-          DB_USER: sql12817767
-          DB_PASSWORD: Ajb7KukR9R
-          DB_NAME: sql12817767
+          DB_HOST: ${{ secrets.DEV_DB_HOST }}
+          DB_PORT: ${{ secrets.DEV_DB_PORT }}
+          DB_USER: ${{ secrets.DEV_DB_USER }}
+          DB_PASSWORD: ${{ secrets.DEV_DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DEV_DB_NAME }}
         run: |
           echo "💾 Creating pre-migration backup for dev environment..."
           
@@ -95,11 +95,11 @@ jobs:
         id: migrate
         if: steps.detect.outputs.has-new == 'true'
         env:
-          DB_HOST: sql12.freesqldatabase.com
-          DB_PORT: 3306
-          DB_USER: sql12817767
-          DB_PASSWORD: Ajb7KukR9R
-          DB_NAME: sql12817767
+          DB_HOST: ${{ secrets.DEV_DB_HOST }}
+          DB_PORT: ${{ secrets.DEV_DB_PORT }}
+          DB_USER: ${{ secrets.DEV_DB_USER }}
+          DB_PASSWORD: ${{ secrets.DEV_DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DEV_DB_NAME }}
         run: |
           echo "🚀 Applying new migrations to dev environment..."
           
@@ -121,11 +121,11 @@ jobs:
       - name: Run data pipeline
         if: steps.migrate.outcome == 'success'
         env:
-          DB_HOST: sql12.freesqldatabase.com
-          DB_PORT: 3306
-          DB_USER: sql12817767
-          DB_PASSWORD: Ajb7KukR9R
-          DB_NAME: sql12817767
+          DB_HOST: ${{ secrets.DEV_DB_HOST }}
+          DB_PORT: ${{ secrets.DEV_DB_PORT }}
+          DB_USER: ${{ secrets.DEV_DB_USER }}
+          DB_PASSWORD: ${{ secrets.DEV_DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DEV_DB_NAME }}
         run: |
           echo "🔄 Running data pipeline in dev environment..."
           python -m src.pipeline run --env dev
@@ -134,11 +134,11 @@ jobs:
       - name: Verify migration integrity
         if: steps.migrate.outcome == 'success'
         env:
-          DB_HOST: sql12.freesqldatabase.com
-          DB_PORT: 3306
-          DB_USER: sql12817767
-          DB_PASSWORD: Ajb7KukR9R
-          DB_NAME: sql12817767
+          DB_HOST: ${{ secrets.DEV_DB_HOST }}
+          DB_PORT: ${{ secrets.DEV_DB_PORT }}
+          DB_USER: ${{ secrets.DEV_DB_USER }}
+          DB_PASSWORD: ${{ secrets.DEV_DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DEV_DB_NAME }}
         run: |
           echo "🔍 Verifying migration integrity..."
           python -m src.migrate verify
