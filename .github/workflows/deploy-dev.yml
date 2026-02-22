@@ -23,22 +23,20 @@ jobs:
       mysql:
         image: mysql:8.0
         env:
-          MYSQL_ROOT_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          MYSQL_DATABASE: ${{ secrets.DB_NAME }}
+          MYSQL_ROOT_PASSWORD: testpw
+          MYSQL_DATABASE: migration_db_dev
         ports:
           - 3306:3306
         options: >-
-          --health-cmd="mysqladmin ping -h 127.0.0.1 -u root -p${{ secrets.DB_PASSWORD }}"
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -u root -ptestpw"
           --health-interval=10s
           --health-timeout=5s
           --health-retries=5
 
     env:
-      DB_HOST:     ${{ secrets.DB_HOST     || '127.0.0.1' }}
-      DB_PORT:     ${{ secrets.DB_PORT     || '3306' }}
-      DB_USER:     ${{ secrets.DB_USER     || 'root' }}
-      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-      DB_NAME:     ${{ secrets.DB_NAME }}
+      DB_HOST:     127.0.0.1
+      DB_PORT:     3306
+      DB_USER:     root
       ENV_NAME:    dev
 
     steps:
@@ -55,6 +53,9 @@ jobs:
 
       # ---------- Backup -----------------------------------------------------
       - name: Pre-migration backup
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
         run: |
           ts=$(date -u +%Y%m%dT%H%M%SZ)
           BACKUP_FILE="backup_dev_${ts}.sql"
@@ -66,10 +67,16 @@ jobs:
       # ---------- Migrate ----------------------------------------------------
       - name: Apply migrations (dev context)
         id: migrate
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
         run: python -m src.migrate update --context dev
 
       - name: Auto-rollback on migration failure
         if: failure() && steps.migrate.outcome == 'failure'
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
         run: |
           echo "::error::Migration failed — restoring from $BACKUP_FILE"
           mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" \
@@ -78,6 +85,9 @@ jobs:
 
       # ---------- Pipeline ---------------------------------------------------
       - name: Run data pipeline (dev)
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
         run: python -m src.pipeline run --env dev
 
       # ---------- Artifacts --------------------------------------------------
