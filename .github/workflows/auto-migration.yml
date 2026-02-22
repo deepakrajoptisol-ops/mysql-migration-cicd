@@ -281,8 +281,8 @@ jobs:
             issueBody += `1. Go to **Actions** → **"Deploy to Production"**\n`;
             issueBody += `2. Click **"Run workflow"**\n`;
             issueBody += `3. Fill in the following inputs:\n`;
-            issueBody += \`   - **Change Ticket ID**: \\\`${crNumber}\\\`\n\`;
-            issueBody += \`   - **Migration IDs**: \\\`${migrationIds}\\\`\n\`;
+            issueBody += `   - **Change Ticket ID**: ${crNumber}\n`;
+            issueBody += `   - **Migration IDs**: ${migrationIds}\n`;
             issueBody += `   - **Allow Destructive**: \`false\` (unless required)\n`;
             issueBody += `   - **Emergency Deployment**: \`false\`\n`;
             issueBody += `4. **Submit** and wait for approver to review\n`;
