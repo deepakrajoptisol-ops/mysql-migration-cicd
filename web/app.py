@@ -19,6 +19,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
 
+# Load environment variables
+from dotenv import load_dotenv
+env_file = Path(__file__).parent.parent / "env.local"
+if env_file.exists():
+    load_dotenv(env_file)
+    print(f"Loaded environment from {env_file}")
+
 # Import our existing migration system
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
@@ -38,7 +45,8 @@ app.add_middleware(
 )
 
 # Serve static files
-app.mount("/static", StaticFiles(directory="web/static"), name="static")
+static_dir = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 # Models
 class MigrationInfo(BaseModel):
@@ -73,7 +81,8 @@ GITHUB_API_BASE = "https://api.github.com"
 @app.get("/")
 async def serve_index():
     """Serve the main web interface"""
-    return FileResponse("web/static/index.html")
+    index_file = Path(__file__).parent / "static" / "index.html"
+    return FileResponse(str(index_file))
 
 @app.get("/api/migrations/versions")
 async def get_all_versions():
