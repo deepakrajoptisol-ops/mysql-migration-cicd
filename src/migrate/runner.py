@@ -241,17 +241,28 @@ def create_backup(backup_file: str = None, environment: str = "unknown") -> str:
         if result.returncode != 0:
             raise Exception(f"Backup creation failed: {result.stderr}")
         
-        # Record backup metadata
+        # Record backup metadata (if table exists)
         backup_size = os.path.getsize(backup_file)
-        conn = get_conn()
         try:
-            execute(conn, """
-                INSERT INTO ops_backup_metadata 
-                (backup_file, file_size, environment, backup_type, created_at)
-                VALUES (%s, %s, %s, 'pre_migration', NOW())
-            """, (backup_file, backup_size, environment))
-        finally:
-            conn.close()
+            conn = get_conn()
+            try:
+                execute(conn, """
+                    INSERT INTO ops_backup_metadata 
+                    (backup_file, file_size, environment, backup_type, created_at)
+                    VALUES (%s, %s, %s, 'pre_migration', NOW())
+                """, (backup_file, backup_size, environment))
+            except Exception as e:
+                # Table might not exist yet (first migration run)
+                logger.warning(json.dumps({
+                    "event": "backup_metadata_skip",
+                    "reason": "ops_backup_metadata table not yet created",
+                    "backup_file": backup_file
+                }))
+            finally:
+                conn.close()
+        except Exception:
+            # Database connection might not be fully set up yet
+            pass
         
         logger.info(json.dumps({
             "event": "backup_created", 
