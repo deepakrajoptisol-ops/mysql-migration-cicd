@@ -56,6 +56,7 @@ def main() -> None:
     p_up = sub.add_parser("update", help="Apply pending changesets")
     p_up.add_argument("--changelog", default="changelog/changelog.yml")
     p_up.add_argument("--context", default=None)
+    p_up.add_argument("--no-backup", action="store_true", help="Skip automatic backup creation")
 
     # update_sql --------------------------------------------------------------
     p_us = sub.add_parser("update_sql", help="Dry-run: print SQL that would run")
@@ -83,7 +84,7 @@ def main() -> None:
             print(f"{len(pending)} changeset(s) pending.")
 
         elif args.command == "update":
-            count = update_cmd(args.changelog, context=args.context)
+            count = update_cmd(args.changelog, context=args.context, auto_backup=not args.no_backup)
             print(f"Applied {count} changeset(s) successfully.")
 
         elif args.command == "update_sql":

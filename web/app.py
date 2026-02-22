@@ -30,7 +30,7 @@ if env_file.exists():
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
 from src.migrate.runner import status_cmd, update_cmd, rollback_cmd, validate_cmd
-from src.migrate.changelog import load_changelog
+from src.migrate.changelog import load_changelog, auto_generate_changelog, checksum
 from src.db import get_conn, execute
 
 app = FastAPI(title="Migration Management API", version="1.0.0")
@@ -89,8 +89,7 @@ async def get_all_versions():
     """Get all available migration versions with their status"""
     try:
         # Load changelog to get all migrations
-        migrations_dir = Path("migrations")
-        changelog = load_changelog(migrations_dir)
+        changelog = auto_generate_changelog("../migrations")
         
         # Get applied migrations from database
         conn = get_conn()
@@ -114,17 +113,26 @@ async def get_all_versions():
         
         # Combine changelog and database info
         versions = []
-        for changeset in changelog.changesets:
-            is_applied = changeset.id in applied_migrations
+        for changeset in changelog:
+            is_applied = changeset["id"] in applied_migrations
+            
+            # Calculate checksum for the SQL file
+            sql_file_path = Path("..") / changeset["sqlFile"]
+            if sql_file_path.exists():
+                sql_content = sql_file_path.read_text(encoding="utf-8")
+                file_checksum = checksum(sql_content)
+            else:
+                file_checksum = "unknown"
+            
             versions.append({
-                'id': changeset.id,
-                'author': changeset.author,
-                'description': changeset.sqlFile.split('/')[-1].replace('.up.sql', '').replace(f"{changeset.id}_", ''),
-                'filename': changeset.sqlFile,
+                'id': changeset["id"],
+                'author': changeset["author"],
+                'description': changeset["sqlFile"].split('/')[-1].replace('.up.sql', '').replace(f"{changeset['id']}_", ''),
+                'filename': changeset["sqlFile"],
                 'status': 'applied' if is_applied else 'pending',
-                'applied_at': applied_migrations.get(changeset.id, {}).get('applied_at'),
-                'risk_level': changeset.risk,
-                'checksum': changeset.checksum,
+                'applied_at': applied_migrations.get(changeset["id"], {}).get('applied_at'),
+                'risk_level': changeset["risk"],
+                'checksum': file_checksum,
                 'can_rollback_to': is_applied
             })
         
@@ -144,8 +152,7 @@ async def get_migration_status():
     """Get current migration status"""
     try:
         # Get pending migrations
-        migrations_dir = Path("migrations")
-        changelog = load_changelog(migrations_dir)
+        changelog = auto_generate_changelog("../migrations")
         
         conn = get_conn()
         try:
@@ -156,18 +163,18 @@ async def get_migration_status():
         finally:
             conn.close()
         
-        pending = [cs for cs in changelog.changesets if cs.id not in applied_ids]
+        pending = [cs for cs in changelog if cs["id"] not in applied_ids]
         
         return {
             'pending_migrations': len(pending),
-            'total_migrations': len(changelog.changesets),
+            'total_migrations': len(changelog),
             'applied_migrations': len(applied_ids),
             'pending_details': [
                 {
-                    'id': cs.id,
-                    'author': cs.author,
-                    'filename': cs.sqlFile,
-                    'risk': cs.risk
+                    'id': cs["id"],
+                    'author': cs["author"],
+                    'filename': cs["sqlFile"],
+                    'risk': cs["risk"]
                 } for cs in pending
             ]
         }
@@ -301,19 +308,39 @@ Uploaded via web interface. This PR will trigger CI validation and auto-deploy t
 
 @app.post("/api/migrations/apply")
 async def apply_migrations():
-    """Apply pending migrations"""
+    """Apply pending migrations with automatic backup"""
     try:
-        # Create backup first
-        timestamp = datetime.now().strftime('%Y%m%dT%H%M%SZ')
-        backup_file = f"backup_web_apply_{timestamp}.sql"
+        # Apply migrations using existing system (auto_backup=True by default)
+        from src.migrate.changelog import auto_generate_changelog
         
-        # Apply migrations using existing system
-        update_cmd()
+        # Check if there are pending migrations first
+        changelog = auto_generate_changelog("../migrations")
+        conn = get_conn()
+        try:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("SELECT ID FROM DATABASECHANGELOG")
+            applied_ids = {row['ID'] for row in cursor.fetchall()}
+            cursor.close()
+        finally:
+            conn.close()
+        
+        pending = [cs for cs in changelog if cs["id"] not in applied_ids]
+        
+        if not pending:
+            return {
+                'success': True,
+                'message': 'No pending migrations to apply',
+                'applied_count': 0
+            }
+        
+        # Apply migrations with automatic backup
+        applied_count = update_cmd(auto_backup=True)
         
         return {
             'success': True,
-            'message': 'Migrations applied successfully',
-            'backup_file': backup_file
+            'message': f'Successfully applied {applied_count} migration(s)',
+            'applied_count': applied_count,
+            'backup_created': True
         }
         
     except Exception as e:

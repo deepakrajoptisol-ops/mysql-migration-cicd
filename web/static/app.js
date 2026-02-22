@@ -108,10 +108,12 @@ class MigrationManager {
             const applyBtn = document.getElementById('applyBtn');
             if (statusData.pending_migrations > 0) {
                 applyBtn.disabled = false;
-                applyBtn.innerHTML = `<i class="fas fa-play"></i> Apply ${statusData.pending_migrations} Pending`;
+                applyBtn.innerHTML = `<i class="fas fa-shield-alt"></i> Apply ${statusData.pending_migrations} with Backup`;
+                applyBtn.title = 'Automatic backup will be created before applying migrations';
             } else {
                 applyBtn.disabled = true;
                 applyBtn.innerHTML = '<i class="fas fa-check"></i> All Up to Date';
+                applyBtn.title = 'No pending migrations to apply';
             }
 
             // Update next available ID
@@ -323,12 +325,12 @@ class MigrationManager {
     }
 
     async applyPendingMigrations() {
-        if (!confirm('Are you sure you want to apply all pending migrations? A backup will be created automatically.')) {
+        if (!confirm('Are you sure you want to apply all pending migrations?\n\n⚠️ A backup will be created automatically before applying any changes.\n\nThis ensures you can rollback if needed.')) {
             return;
         }
 
         try {
-            this.showLoading('Applying pending migrations...');
+            this.showLoading('Creating backup and applying migrations...');
             
             const result = await this.apiCall('/api/migrations/apply', {
                 method: 'POST'
@@ -336,11 +338,19 @@ class MigrationManager {
 
             this.hideLoading();
             
-            this.showSuccess(`
-                <h6>Migrations applied successfully!</h6>
-                <p>${result.message}</p>
-                <p><strong>Backup created:</strong> ${result.backup_file}</p>
-            `);
+            if (result.applied_count === 0) {
+                this.showSuccess(`
+                    <h6>No migrations to apply</h6>
+                    <p>${result.message}</p>
+                `);
+            } else {
+                this.showSuccess(`
+                    <h6>Migrations applied successfully!</h6>
+                    <p><strong>Applied:</strong> ${result.applied_count} migration(s)</p>
+                    <p><strong>Backup:</strong> ✅ Automatic backup created before migration</p>
+                    <p><strong>Rollback:</strong> Available via "Rollback" tab if needed</p>
+                `);
+            }
 
             // Reload data
             this.loadDashboardData();
@@ -349,7 +359,12 @@ class MigrationManager {
 
         } catch (error) {
             this.hideLoading();
-            this.showError('Failed to apply migrations: ' + error.message);
+            this.showError(`
+                <h6>Migration failed</h6>
+                <p><strong>Error:</strong> ${error.message}</p>
+                <p><strong>Backup:</strong> If a backup was created, you can use it for rollback</p>
+                <p><strong>Next steps:</strong> Check the "Backups" tab for available restore points</p>
+            `);
         }
     }
 

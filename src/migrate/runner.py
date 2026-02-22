@@ -14,6 +14,9 @@ import json
 import logging
 import os
 import uuid
+import subprocess
+from datetime import datetime
+from pathlib import Path
 
 from ..db import get_conn, fetch_one, fetch_all, execute, execute_script
 from .changelog import load_changelog, resolve_sql, checksum
@@ -207,11 +210,68 @@ def status_cmd(changelog_path: str = "changelog/changelog.yml",
     return pending
 
 
+def create_backup(backup_file: str = None, environment: str = "unknown") -> str:
+    """Create a database backup before migration."""
+    if not backup_file:
+        timestamp = datetime.now().strftime('%Y%m%dT%H%M%SZ')
+        backup_file = f"backup_pre_migration_{timestamp}.sql"
+    
+    logger.info(json.dumps({
+        "event": "creating_backup", 
+        "backup_file": backup_file,
+        "environment": environment
+    }))
+    
+    # Create backup using mysqldump
+    env = os.environ
+    cmd = [
+        'mysqldump',
+        '-h', env.get('DB_HOST', '127.0.0.1'),
+        '-P', env.get('DB_PORT', '3307'),  # Use correct port
+        '-u', env.get('DB_USER', 'root'),
+        f'-p{env.get("DB_PASSWORD", "testpw")}',
+        '--routines', '--triggers', '--events', '--single-transaction',
+        env.get('DB_NAME', 'migration_db')
+    ]
+    
+    try:
+        with open(backup_file, 'w') as f:
+            result = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE, text=True)
+        
+        if result.returncode != 0:
+            raise Exception(f"Backup creation failed: {result.stderr}")
+        
+        # Record backup metadata
+        backup_size = os.path.getsize(backup_file)
+        conn = get_conn()
+        try:
+            execute(conn, """
+                INSERT INTO ops_backup_metadata 
+                (backup_file, file_size, environment, backup_type, created_at)
+                VALUES (%s, %s, %s, 'pre_migration', NOW())
+            """, (backup_file, backup_size, environment))
+        finally:
+            conn.close()
+        
+        logger.info(json.dumps({
+            "event": "backup_created", 
+            "backup_file": backup_file,
+            "size_bytes": backup_size
+        }))
+        
+        return backup_file
+        
+    except Exception as e:
+        logger.error(json.dumps({"event": "backup_failed", "error": str(e)}))
+        raise RuntimeError(f"Failed to create backup: {e}")
+
+
 def update_cmd(changelog_path: str = "changelog/changelog.yml",
                base_dir: str = ".",
                context: str | None = None,
-               dry_run: bool = False) -> int:
-    """Apply pending changesets.  Returns the count of changesets applied."""
+               dry_run: bool = False,
+               auto_backup: bool = True) -> int:
+    """Apply pending changesets with automatic backup. Returns the count of changesets applied."""
     actor      = os.getenv("GITHUB_ACTOR", "local")
     env_name   = os.getenv("ENV_NAME", "dev")
     git_sha    = os.getenv("GITHUB_SHA")
@@ -221,6 +281,36 @@ def update_cmd(changelog_path: str = "changelog/changelog.yml",
     changesets = load_changelog(changelog_path)
     conn = get_conn()
     _bootstrap_tables(conn)
+    
+    # Check if there are pending migrations
+    applied = _get_applied(conn)
+    pending_changesets = []
+    for cs in changesets:
+        if not _matches_context(cs, context):
+            continue
+        key = (cs["id"], cs["author"])
+        if key not in applied:
+            pending_changesets.append(cs)
+    
+    # Create automatic backup if there are pending migrations and auto_backup is enabled
+    if pending_changesets and auto_backup and not dry_run:
+        try:
+            backup_ref = create_backup(environment=env_name)
+            logger.info(json.dumps({
+                "event": "pre_migration_backup_created",
+                "backup_file": backup_ref,
+                "pending_migrations": len(pending_changesets)
+            }))
+        except Exception as e:
+            logger.error(json.dumps({
+                "event": "backup_creation_failed",
+                "error": str(e),
+                "continuing_without_backup": False
+            }))
+            raise RuntimeError(f"Cannot proceed without backup: {e}")
+    elif not pending_changesets:
+        logger.info(json.dumps({"event": "no_pending_migrations"}))
+        return 0
 
     # Record run start
     execute(conn, """
