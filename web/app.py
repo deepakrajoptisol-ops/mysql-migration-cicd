@@ -395,7 +395,7 @@ async def create_backup():
             '-P', env.get('DB_PORT', '3307'),
             '-u', env.get('DB_USER', 'root'),
             f'-p{env.get("DB_PASSWORD", "testpw")}',
-            '--routines', '--triggers', '--events', '--single-transaction',
+            '--single-transaction', '--no-tablespaces',
             env.get('DB_NAME', 'migration_db')
         ]
         
