@@ -12,6 +12,11 @@ on:
       - 'migrations/*.up.sql'
     branches: [main]
 
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
 jobs:
   detect-and-deploy-dev:
     name: Deploy New Migrations to Dev
@@ -165,16 +170,18 @@ jobs:
 
       - name: Commit backup to repository
         if: steps.migrate.outcome == 'success'
+        continue-on-error: true
         run: |
           echo "📁 Committing backup file to repository..."
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add backups/
           git commit -m "Add dev migration backup: ${{ steps.backup.outputs.backup-file }}" || echo "No changes to commit"
-          git push || echo "No changes to push"
+          git push || echo "⚠️ Could not push backup commit (non-blocking)"
 
       - name: Create success comment
         if: steps.migrate.outcome == 'success'
+        continue-on-error: true
         uses: actions/github-script@v7
         with:
           script: |
@@ -216,6 +223,7 @@ jobs:
       - name: Create automatic production CR
         if: steps.migrate.outcome == 'success'
         id: create-cr
+        continue-on-error: true
         uses: actions/github-script@v7
         with:
           script: |
@@ -315,6 +323,7 @@ jobs:
 
       - name: Add CR link to commit comment
         if: steps.migrate.outcome == 'success' && steps.create-cr.outputs.result
+        continue-on-error: true
         uses: actions/github-script@v7
         with:
           script: |
