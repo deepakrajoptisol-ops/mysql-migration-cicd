@@ -74,7 +74,7 @@ def _bootstrap_tables(conn) -> None:
             status        ENUM('running','succeeded','failed','rolled_back') NOT NULL,
             backup_ref    VARCHAR(512) NULL,
             error_message TEXT         NULL,
-            details       JSON         NULL
+            details       LONGTEXT     NULL
         ) ENGINE=InnoDB
     """)
 
