@@ -1,0 +1,7 @@
+# Database migration reviews required from platform team
+/migrations/**  @platform-team
+/changelog/**   @platform-team
+
+# Pipeline changes reviewed by data engineering
+/src/pipeline/** @data-engineering-team
+/sql/**          @data-engineering-team

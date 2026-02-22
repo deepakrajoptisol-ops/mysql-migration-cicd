@@ -1,0 +1,127 @@
+###############################################################################
+# Prod deploy workflow — manual trigger only
+#
+# Uses GitHub Environment "prod" with REQUIRED REVIEWERS for approval.
+# Accepts explicit inputs for destructive-change override and change ticket.
+# Takes a pre-migration backup, applies changesets, and auto-rolls-back
+# on failure.  Prints an incident note after rollback.
+###############################################################################
+name: Deploy Prod
+
+on:
+  workflow_dispatch:
+    inputs:
+      allow_destructive:
+        description: "Allow destructive SQL (DROP TABLE etc.)?"
+        required: false
+        type: boolean
+        default: false
+      change_ticket_id:
+        description: "Change / incident ticket ID (for audit)"
+        required: true
+        type: string
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: prod          # <-- requires GitHub Environment "prod" with reviewers
+
+    # For demo: use a service container.
+    # In production: remove the service block and connect to the real
+    # prod database via GitHub Environment secrets.
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          MYSQL_DATABASE: ${{ secrets.DB_NAME }}
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -u root -p${{ secrets.DB_PASSWORD }}"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    env:
+      DB_HOST:           ${{ secrets.DB_HOST     || '127.0.0.1' }}
+      DB_PORT:           ${{ secrets.DB_PORT     || '3306' }}
+      DB_USER:           ${{ secrets.DB_USER     || 'root' }}
+      DB_PASSWORD:       ${{ secrets.DB_PASSWORD }}
+      DB_NAME:           ${{ secrets.DB_NAME }}
+      ENV_NAME:          prod
+      ALLOW_DESTRUCTIVE: ${{ inputs.allow_destructive }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log deployment metadata
+        run: |
+          echo "=== PROD DEPLOYMENT ==="
+          echo "Change ticket : ${{ inputs.change_ticket_id }}"
+          echo "Destructive   : ${{ inputs.allow_destructive }}"
+          echo "Actor         : ${{ github.actor }}"
+          echo "SHA           : ${{ github.sha }}"
+          echo "======================="
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ---------- Backup -----------------------------------------------------
+      - name: Pre-migration backup
+        run: |
+          ts=$(date -u +%Y%m%dT%H%M%SZ)
+          BACKUP_FILE="backup_prod_${ts}.sql"
+          mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" \
+            --routines --triggers --events --single-transaction \
+            "$DB_NAME" > "$BACKUP_FILE"
+          echo "BACKUP_FILE=$BACKUP_FILE" >> $GITHUB_ENV
+
+      # ---------- Migrate ----------------------------------------------------
+      - name: Apply migrations (prod context)
+        id: migrate
+        run: python -m src.migrate update --context prod
+
+      - name: Auto-rollback on migration failure
+        if: failure() && steps.migrate.outcome == 'failure'
+        run: |
+          echo "::error::PROD migration failed — restoring from $BACKUP_FILE"
+          mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" \
+            "$DB_NAME" < "$BACKUP_FILE"
+          echo ""
+          echo "=========================================="
+          echo " ROLLBACK COMPLETE"
+          echo " Database restored to pre-migration state."
+          echo " Change ticket: ${{ inputs.change_ticket_id }}"
+          echo ""
+          echo " NEXT STEPS (runbook):"
+          echo "  1. Verify application health."
+          echo "  2. Check ops_migration_runs for the failed run_id."
+          echo "  3. Fix the migration SQL and raise a new PR."
+          echo "  4. Re-run this workflow after approval."
+          echo "=========================================="
+
+      # ---------- Pipeline (smoke) -------------------------------------------
+      - name: Run pipeline smoke checks (prod)
+        if: success()
+        run: python -m src.pipeline run --env prod
+
+      # ---------- Post-deploy verification -----------------------------------
+      - name: Verify checksums
+        if: success()
+        run: python -m src.migrate verify
+
+      # ---------- Artifacts --------------------------------------------------
+      - name: Upload backup artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pre-migration-backup-prod
+          path: backup_prod_*.sql
+          retention-days: 90

@@ -1,0 +1,80 @@
+##############################################################################
+# changelog.yml — Liquibase-like YAML Changelog
+#
+# Each changeset must specify:
+#   id, author, sqlFile, risk, allowDestructive
+# Optional:
+#   labels, contexts, preconditions (tableExists / columnExists /
+#   indexExists / sqlCheck) with onFail: HALT | MARK_RAN | WARN
+#
+# Ordering: changesets are applied in the order listed here.
+# Immutability: once applied, the SQL file's checksum is locked; edits
+#               cause a drift-detection failure.
+##############################################################################
+
+databaseChangeLog:
+
+  # --- 001: Foundational schema (staging + curated + ops) -------------------
+  - changeSet:
+      id: "001"
+      author: "platform-team"
+      sqlFile: "migrations/001_initial_schema.up.sql"
+      risk: "low"
+      allowDestructive: false
+      labels: "schema,init"
+      contexts: "dev,prod"
+
+  # --- 002: Performance indexes -------------------------------------------
+  - changeSet:
+      id: "002"
+      author: "platform-team"
+      sqlFile: "migrations/002_add_indexes.up.sql"
+      risk: "low"
+      allowDestructive: false
+      labels: "performance"
+      contexts: "dev,prod"
+      preconditions:
+        - tableExists:
+            tableName: "stg_customers"
+          onFail: "HALT"
+        - tableExists:
+            tableName: "stg_orders"
+          onFail: "HALT"
+
+  # --- 003: RBAC + data masking views -------------------------------------
+  - changeSet:
+      id: "003"
+      author: "security-team"
+      sqlFile: "migrations/003_rbac_masking.up.sql"
+      risk: "medium"
+      allowDestructive: false
+      labels: "security,rbac"
+      contexts: "dev,prod"
+      preconditions:
+        - tableExists:
+            tableName: "dim_customer"
+          onFail: "HALT"
+        - tableExists:
+            tableName: "fact_order"
+          onFail: "HALT"
+
+  # --- 004: Customer segmentation -------------------------------------
+  - changeSet:
+      id: "004"
+      author: "data-team"
+      sqlFile: "migrations/004_add_customer_segment.up.sql"
+      risk: "low"
+      allowDestructive: false
+      labels: "feature,segmentation"
+      contexts: "dev,prod"
+      preconditions:
+        - tableExists:
+            tableName: "stg_customers"
+          onFail: "HALT"
+        - tableExists:
+            tableName: "dim_customer"
+          onFail: "HALT"
+        - columnExists:
+            tableName: "dim_customer"
+            columnName: "customer_sk"
+          onFail: "HALT"
